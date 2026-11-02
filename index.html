@@ -1,0 +1,1163 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Temir va Po'lat</title>
+<style>
+  :root { --accent:#38e1ff; --red:#ff3b4e; --bg:#05060c; --ui:#0d1020; --text:#e8ecff; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: "Segoe UI", system-ui, sans-serif; overflow: hidden; }
+  #wrap { position: relative; width: 100vw; height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  #stage { position: relative; width: min(100vw, calc((100vh - 56px) * 16 / 9)); aspect-ratio: 16 / 9; background: #000; box-shadow: 0 0 60px rgba(56,225,255,.15); }
+  canvas { width: 100%; height: 100%; display: block; }
+  #start { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px;
+           background: radial-gradient(circle at 50% 40%, rgba(56,225,255,.18), rgba(0,0,0,.92) 70%); cursor: pointer; z-index: 5; text-align: center; padding: 16px; }
+  #start h1 { font-size: clamp(28px, 6vw, 72px); letter-spacing: .08em; text-shadow: 0 0 20px var(--accent), 0 0 40px var(--red); }
+  #start p { opacity: .85; font-size: clamp(13px, 2vw, 18px); }
+  #start button { font-size: clamp(16px, 2.4vw, 22px); padding: 14px 34px; border-radius: 40px; border: 2px solid var(--accent); background: rgba(56,225,255,.12); color: #fff; cursor: pointer; }
+  #start button:hover { background: rgba(56,225,255,.3); }
+  #bar { width: min(100vw, calc((100vh - 56px) * 16 / 9)); height: 56px; display: flex; align-items: center; gap: 10px; padding: 0 12px; background: var(--ui); }
+  #bar button { background: none; border: 1px solid rgba(255,255,255,.2); color: var(--text); border-radius: 8px; height: 36px; min-width: 40px; padding: 0 10px; cursor: pointer; font-size: 16px; }
+  #bar button:hover { border-color: var(--accent); }
+  #seek { flex: 1; accent-color: var(--accent); min-width: 60px; }
+  #time { font-variant-numeric: tabular-nums; font-size: 14px; opacity: .85; white-space: nowrap; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="stage">
+    <canvas id="c" width="1280" height="720"></canvas>
+    <div id="start">
+      <h1>TEMIR VA PO'LAT</h1>
+      <p>Anime multfilm · Robot va Samuray jangi · 5 daqiqa</p>
+      <button id="startBtn">▶ Boshlash</button>
+      <p style="font-size:13px;opacity:.6">Probel — pauza · ← → — 5 soniya · M — ovoz · F — to'liq ekran</p>
+    </div>
+  </div>
+  <div id="bar">
+    <button id="play" title="Ijro / Pauza">▶</button>
+    <input id="seek" type="range" min="0" max="300" step="0.1" value="0">
+    <span id="time">0:00 / 5:00</span>
+    <button id="mute" title="Ovoz">🔊</button>
+    <button id="fs" title="To'liq ekran">⛶</button>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* =========================================================
+   TEMIR VA PO'LAT — 5 daqiqalik anime multfilm (Canvas)
+   Barcha kadrlar vaqtga bog'liq holda chiziladi: render(t)
+   ========================================================= */
+const W = 1280, H = 720, DURATION = 300;
+const cv = document.getElementById('c');
+const c = cv.getContext('2d');
+const PI = Math.PI, TAU = PI * 2;
+
+// ---------- Yordamchi funksiyalar ----------
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, k) => a + (b - a) * k;
+const ease = k => k < .5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+const prog = (t, a, b) => clamp((t - a) / (b - a), 0, 1);
+function rnd(i) { const x = Math.sin(i * 127.1 + 311.7) * 43758.5453; return x - Math.floor(x); }
+// Keyframe interpolatsiya: [[vaqt, qiymat], ...]
+function kf(t, frames) {
+  if (t <= frames[0][0]) return frames[0][1];
+  for (let i = 1; i < frames.length; i++) {
+    if (t <= frames[i][0]) {
+      const [t0, v0] = frames[i - 1], [t1, v1] = frames[i];
+      return lerp(v0, v1, ease((t - t0) / (t1 - t0)));
+    }
+  }
+  return frames[frames.length - 1][1];
+}
+function rr(x, y, w, h, r) { c.beginPath(); c.roundRect ? c.roundRect(x, y, w, h, r) : c.rect(x, y, w, h); }
+function ellipse(x, y, rx, ry) { c.beginPath(); c.ellipse(x, y, rx, ry, 0, 0, TAU); }
+
+// ---------- Pozalar ----------
+function pose(name, t, p = 0) {
+  const P = { lean: 0, legA: 0, legB: 0, armF: -0.5, armB: 0.3, bob: 0, sword: -0.4 };
+  switch (name) {
+    case 'idle':
+      P.bob = Math.sin(t * 2.2) * 2; P.armF = -0.35 + Math.sin(t * 2.2) * .04; P.legA = -.12; P.legB = .12; break;
+    case 'pant':
+      P.bob = Math.sin(t * 6) * 4 + 6; P.lean = .25; P.armF = -.2; P.armB = .2; P.legA = -.3; P.legB = .3; break;
+    case 'run': {
+      const s = Math.sin(t * 16);
+      P.legA = s * .8; P.legB = -s * .8; P.lean = .3; P.armF = -1.1 - s * .3; P.armB = s * .7; P.bob = -Math.abs(s) * 6; break; }
+    case 'walk': {
+      const s = Math.sin(t * 6);
+      P.legA = s * .45; P.legB = -s * .45; P.armF = -.2 - s * .3; P.armB = s * .3; P.bob = -Math.abs(s) * 3; break; }
+    case 'guard':
+      P.armF = -2.2; P.armB = -.8; P.legA = -.45; P.legB = .45; P.bob = 8 + Math.sin(t * 3) * 1.5; P.lean = .12; P.sword = -1.0; break;
+    case 'stance':
+      P.armF = -1.35; P.armB = -1.0; P.legA = -.55; P.legB = .5; P.bob = 10 + Math.sin(t * 3) * 1.5; P.lean = .2; P.sword = .2; break;
+    case 'attack': { // p: 0..1
+      const k = ease(clamp(p * 1.6, 0, 1));
+      P.armF = lerp(-3.0, -0.4, k); P.armB = lerp(-1.4, 0.4, k); P.lean = lerp(-.1, .45, k);
+      P.legA = -.7; P.legB = .55; P.bob = 12; P.sword = lerp(-.6, .3, k); break; }
+    case 'shoot':
+      P.armF = -1.57; P.armB = -.3; P.lean = -.05; P.legA = -.4; P.legB = .4; P.bob = 6; break;
+    case 'hit':
+      P.lean = -.5; P.armF = .4; P.armB = .9; P.legA = .3; P.legB = -.4; P.bob = 4; break;
+    case 'jump':
+      P.legA = -1.1; P.legB = -.4; P.armF = -2.4; P.armB = -1.6; P.lean = .2; P.sword = -.6; break;
+    case 'kneel':
+      P.legA = -1.5; P.legB = .9; P.bob = 34; P.lean = .35; P.armF = -.1; P.armB = .3; break;
+    case 'bow':
+      P.lean = .7; P.armF = .1; P.armB = .1; P.bob = 2; break;
+    case 'shake':
+      P.armF = -1.5; P.armB = .2; P.bob = Math.sin(t * 2) * 1.5; P.legA = -.1; P.legB = .1; P.sword = -1.4; break;
+    case 'power':
+      P.armF = -2.6 + Math.sin(t * 20) * .03; P.armB = -2.2; P.legA = -.55; P.legB = .55; P.bob = 6 + Math.sin(t * 30) * 1.5; P.lean = -.1; P.sword = -.2; break;
+  }
+  return P;
+}
+
+function limb(px, py, a, len, w, col, edge) {
+  c.save(); c.translate(px, py); c.rotate(a);
+  rr(-w / 2, -w / 4, w, len + w / 4, w / 2.4); c.fillStyle = col; c.fill();
+  if (edge) { c.strokeStyle = edge; c.lineWidth = 2; c.stroke(); }
+  c.restore();
+}
+
+// ---------- ROBOT: KAZE-01 ----------
+function drawRobot(x, y, s, f, P, t, o = {}) {
+  c.save(); c.translate(x, y); c.scale(f * s, s);
+  if (!o.noShadow) { c.fillStyle = 'rgba(0,0,0,.35)'; ellipse(0, 2, 55, 10); c.fill(); }
+  c.translate(0, P.bob || 0);
+  const glow = o.glow || 0;
+  const coreCol = o.coreCol || '#38e1ff';
+  if (glow > 0) { // aura
+    const g = c.createRadialGradient(0, -110, 10, 0, -110, 170 + glow * 40);
+    g.addColorStop(0, `rgba(56,225,255,${.45 * glow})`); g.addColorStop(1, 'rgba(56,225,255,0)');
+    c.fillStyle = g; c.fillRect(-260, -330, 520, 360);
+  }
+  // Ortdagi oyoq
+  limb(-14, -86, P.legB, 44, 22, '#8a96b4', '#3a4466');
+  c.save(); c.translate(-14, -86); c.rotate(P.legB); limb(0, 44, Math.max(0, -P.legB) * .8, 40, 20, '#7b87a5', '#3a4466');
+  c.restore();
+  limb(14, -86, P.legA, 44, 24, '#dfe6f7', '#3a4466');
+  c.save(); c.translate(14, -86); c.rotate(P.legA); c.save(); c.translate(0, 44); c.rotate(Math.max(0, -P.legA) * .8);
+  rr(-12, 0, 24, 40, 8); c.fillStyle = '#cdd6ee'; c.fill(); c.strokeStyle = '#3a4466'; c.lineWidth = 2; c.stroke();
+  rr(-14, 34, 34, 10, 4); c.fillStyle = '#4f5b80'; c.fill();
+  c.restore(); c.restore();
+  // Tana
+  c.save(); c.translate(0, -86); c.rotate(P.lean || 0);
+  // ortdagi qo'l
+  limb(-6, -58, P.armB, 34, 18, '#7b87a5', '#3a4466');
+  c.save(); c.translate(-6, -58); c.rotate(P.armB); limb(0, 34, -.3, 30, 16, '#6c7898', '#3a4466'); c.restore();
+  // Ryukzak/thruster
+  rr(-44, -66, 16, 46, 6); c.fillStyle = '#4f5b80'; c.fill();
+  if (o.thrust) {
+    const fl = 30 + Math.sin(t * 60) * 8 + o.thrust * 40;
+    const g = c.createLinearGradient(0, -20, 0, -20 + fl);
+    g.addColorStop(0, '#fff'); g.addColorStop(.3, '#38e1ff'); g.addColorStop(1, 'rgba(56,225,255,0)');
+    c.fillStyle = g; c.beginPath(); c.moveTo(-44, -20); c.lineTo(-28, -20); c.lineTo(-36, -20 + fl); c.fill();
+  }
+  // Ko'krak
+  const tg = c.createLinearGradient(-34, -72, 34, 0);
+  tg.addColorStop(0, '#ffffff'); tg.addColorStop(1, '#a9b5d6');
+  c.beginPath(); c.moveTo(-34, -72); c.lineTo(34, -72); c.lineTo(26, 0); c.lineTo(-26, 0); c.closePath();
+  c.fillStyle = tg; c.fill(); c.strokeStyle = '#3a4466'; c.lineWidth = 2.5; c.stroke();
+  c.fillStyle = '#2a3560'; c.fillRect(-26, -8, 52, 8);
+  c.strokeStyle = '#7f8db5'; c.lineWidth = 2; c.beginPath(); c.moveTo(-20, -60); c.lineTo(-8, -48); c.moveTo(20, -60); c.lineTo(8, -48); c.stroke();
+  // Yadro
+  c.save(); c.shadowColor = coreCol; c.shadowBlur = 18 + glow * 30;
+  c.fillStyle = coreCol; ellipse(0, -40, 9 + glow * 3, 9 + glow * 3); c.fill();
+  c.fillStyle = '#fff'; ellipse(0, -40, 4, 4); c.fill(); c.restore();
+  // Bosh
+  c.save(); c.translate(0, -74 + Math.sin(t * 2) * .5);
+  rr(-20, -36, 40, 34, 9); c.fillStyle = '#f0f4ff'; c.fill(); c.strokeStyle = '#3a4466'; c.lineWidth = 2.5; c.stroke();
+  // shox
+  c.fillStyle = '#ff3b4e'; c.beginPath(); c.moveTo(-6, -36); c.lineTo(0, -54); c.lineTo(6, -36); c.fill();
+  c.strokeStyle = '#3a4466'; c.lineWidth = 2; c.beginPath(); c.moveTo(12, -34); c.lineTo(18, -50); c.stroke();
+  c.fillStyle = '#38e1ff'; ellipse(18, -51, 3, 3); c.fill();
+  // visor
+  c.save(); c.shadowColor = o.eyeCol || '#38e1ff'; c.shadowBlur = 14;
+  rr(-12, -26, 30, 8, 4); c.fillStyle = o.eyeCol || '#38e1ff'; c.fill(); c.restore();
+  c.fillStyle = '#2a3560'; c.fillRect(-14, -12, 28, 4);
+  c.restore();
+  // Yelka
+  c.fillStyle = '#ff3b4e'; rr(-4, -76, 30, 20, 7); c.fill(); c.strokeStyle = '#3a4466'; c.lineWidth = 2; c.stroke();
+  // Oldingi qo'l
+  c.save(); c.translate(10, -60); c.rotate(P.armF);
+  rr(-10, -4, 20, 38, 8); c.fillStyle = '#e6ecfb'; c.fill(); c.strokeStyle = '#3a4466'; c.lineWidth = 2; c.stroke();
+  if (!o.noFist) {
+    rr(-12, 32, 24, 36, 8); c.fillStyle = '#cdd6ee'; c.fill(); c.stroke();
+    c.fillStyle = '#4f5b80'; rr(-11, 62, 22, 14, 5); c.fill();
+    c.save(); c.shadowColor = '#38e1ff'; c.shadowBlur = 10; c.fillStyle = '#38e1ff'; ellipse(0, 70, 4, 4); c.fill(); c.restore();
+  }
+  if (o.blade) { // energiya qilichi
+    c.save(); c.shadowColor = '#38e1ff'; c.shadowBlur = 25;
+    const bl = 110 * o.blade;
+    const g = c.createLinearGradient(0, 74, 0, 74 + bl);
+    g.addColorStop(0, '#ffffff'); g.addColorStop(1, '#38e1ff');
+    c.fillStyle = g; c.beginPath(); c.moveTo(-6, 74); c.lineTo(6, 74); c.lineTo(2, 74 + bl); c.lineTo(-2, 74 + bl); c.fill();
+    c.restore();
+  }
+  c.restore();
+  c.restore();
+  if (o.damage) { // uchqunlar
+    for (let i = 0; i < 3; i++) {
+      if (Math.sin(t * 9 + i * 2) > .6) {
+        c.strokeStyle = '#ffe36e'; c.lineWidth = 2; c.beginPath();
+        const sx = -10 + i * 14, sy = -130 + i * 20; c.moveTo(sx, sy); c.lineTo(sx + 8, sy - 10); c.lineTo(sx + 2, sy - 14); c.lineTo(sx + 12, sy - 24); c.stroke();
+      }
+    }
+  }
+  c.restore();
+}
+
+// ---------- SAMURAY: RYU TAKEDA ----------
+function drawSamurai(x, y, s, f, P, t, o = {}) {
+  c.save(); c.translate(x, y); c.scale(f * s, s);
+  if (!o.noShadow) { c.fillStyle = 'rgba(0,0,0,.35)'; ellipse(0, 2, 50, 10); c.fill(); }
+  c.translate(0, P.bob || 0);
+  const glow = o.glow || 0;
+  if (glow > 0) {
+    const g = c.createRadialGradient(0, -110, 10, 0, -110, 170 + glow * 40);
+    g.addColorStop(0, `rgba(255,70,60,${.45 * glow})`); g.addColorStop(1, 'rgba(255,170,40,0)');
+    c.fillStyle = g; c.fillRect(-260, -330, 520, 360);
+  }
+  const wind = Math.sin(t * 5) * 6 + (o.windBoost || 0);
+  // Oyoqlar (hakama)
+  const leg = (a, col) => {
+    c.save(); c.translate(0, -84); c.rotate(a);
+    c.beginPath(); c.moveTo(-12, 0); c.lineTo(12, 0); c.lineTo(20, 78); c.lineTo(-18, 78); c.closePath();
+    c.fillStyle = col; c.fill(); c.strokeStyle = '#111'; c.lineWidth = 2; c.stroke();
+    c.fillStyle = '#2b1b12'; rr(-10, 76, 26, 8, 3); c.fill();
+    c.restore();
+  };
+  leg(P.legB, '#1b2240'); leg(P.legA, '#28315a');
+  // Tana
+  c.save(); c.translate(0, -84); c.rotate(P.lean || 0);
+  // Sharf (shamolda)
+  c.fillStyle = '#ff3b4e'; c.beginPath(); c.moveTo(-6, -66);
+  c.quadraticCurveTo(-40, -70 + wind, -78, -58 + wind * 1.6); c.lineTo(-74, -48 + wind * 1.4); c.quadraticCurveTo(-40, -58 + wind, -6, -56); c.fill();
+  // ortdagi qo'l
+  limb(-8, -58, P.armB, 34, 16, '#9a1d2a', '#111');
+  c.save(); c.translate(-8, -58); c.rotate(P.armB); limb(0, 34, -.3, 28, 13, '#e8b98f', '#111'); c.restore();
+  // Ko'krak zirhi
+  c.beginPath(); c.moveTo(-28, -70); c.lineTo(28, -70); c.lineTo(24, 2); c.lineTo(-24, 2); c.closePath();
+  c.fillStyle = '#c4222f'; c.fill(); c.strokeStyle = '#111'; c.lineWidth = 2.5; c.stroke();
+  c.strokeStyle = '#f2c14e'; c.lineWidth = 2;
+  for (let i = 0; i < 4; i++) { c.beginPath(); c.moveTo(-24, -52 + i * 13); c.lineTo(24, -52 + i * 13); c.stroke(); }
+  c.fillStyle = '#111'; c.fillRect(-26, -6, 52, 8);
+  c.fillStyle = '#f2c14e'; c.fillRect(-4, -6, 8, 8);
+  // Bosh
+  c.save(); c.translate(0, -72);
+  c.fillStyle = '#e8b98f'; rr(-15, -36, 30, 34, 10); c.fill(); c.strokeStyle = '#111'; c.lineWidth = 2; c.stroke();
+  // soch
+  c.fillStyle = '#121218'; c.beginPath(); c.moveTo(-17, -20); c.quadraticCurveTo(-18, -44, 0, -42); c.quadraticCurveTo(18, -44, 17, -24);
+  c.lineTo(10, -30); c.lineTo(2, -24); c.lineTo(-6, -30); c.lineTo(-12, -22); c.closePath(); c.fill();
+  c.beginPath(); c.ellipse(-4, -46, 6, 5, 0, 0, TAU); c.fill(); // tepakal
+  // bosh bog'ich
+  c.fillStyle = '#f4f4f4'; c.fillRect(-16, -30, 32, 5);
+  c.beginPath(); c.moveTo(-15, -29); c.lineTo(-38, -34 + wind); c.lineTo(-36, -27 + wind); c.closePath(); c.fill();
+  // ko'z
+  c.strokeStyle = '#111'; c.lineWidth = 2.5; c.beginPath(); c.moveTo(4, -18); c.lineTo(12, -19); c.stroke();
+  if (o.eyeGlow) { c.save(); c.shadowColor = '#ff4040'; c.shadowBlur = 12; c.strokeStyle = '#ff6060'; c.stroke(); c.restore(); }
+  c.beginPath(); c.moveTo(3, -24); c.lineTo(13, -26); c.stroke();
+  c.restore();
+  // Yelka zirhi
+  c.fillStyle = '#9a1d2a'; c.beginPath(); c.moveTo(-2, -72); c.lineTo(26, -70); c.lineTo(30, -50); c.lineTo(2, -52); c.closePath(); c.fill();
+  c.strokeStyle = '#f2c14e'; c.lineWidth = 2; c.stroke();
+  // Oldingi qo'l + katana
+  c.save(); c.translate(10, -60); c.rotate(P.armF);
+  rr(-8, -4, 16, 36, 7); c.fillStyle = '#c4222f'; c.fill(); c.strokeStyle = '#111'; c.lineWidth = 2; c.stroke();
+  rr(-6, 30, 12, 28, 6); c.fillStyle = '#e8b98f'; c.fill(); c.stroke();
+  c.translate(0, 60); c.rotate(P.sword || 0);
+  if (!o.noSword) {
+    // sopi
+    c.fillStyle = '#1a1a1a'; rr(-3, -16, 6, 24, 2); c.fill();
+    c.fillStyle = '#f2c14e'; ellipse(0, 9, 8, 3); c.fill();
+    // tig'
+    c.save();
+    if (o.swordGlow) { c.shadowColor = o.swordGlowCol || '#ff5a3c'; c.shadowBlur = 20 + o.swordGlow * 25; }
+    const g = c.createLinearGradient(0, 10, 0, 125);
+    g.addColorStop(0, '#ffffff'); g.addColorStop(1, o.swordGlow ? '#ffb347' : '#b8c4d8');
+    c.fillStyle = g; c.beginPath(); c.moveTo(-3, 10); c.lineTo(3, 10); c.quadraticCurveTo(8, 70, 3, 125); c.lineTo(-1, 118); c.quadraticCurveTo(2, 70, -3, 10); c.fill();
+    c.restore();
+  }
+  c.restore();
+  c.restore();
+  c.restore();
+}
+
+// ---------- Effektlar ----------
+function sparks(x, y, age, seed, col = '#ffe36e', n = 18, power = 1) {
+  if (age < 0 || age > .7) return;
+  c.save(); c.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < n; i++) {
+    const a = rnd(seed + i) * TAU, sp = (180 + rnd(seed + i * 3) * 380) * power;
+    const d = sp * age, d2 = sp * Math.max(0, age - .05);
+    c.strokeStyle = col; c.globalAlpha = 1 - age / .7; c.lineWidth = 2.5;
+    c.beginPath(); c.moveTo(x + Math.cos(a) * d2, y + Math.sin(a) * d2 + 200 * age * age);
+    c.lineTo(x + Math.cos(a) * d, y + Math.sin(a) * d + 200 * age * age); c.stroke();
+  }
+  if (age < .15) {
+    const g = c.createRadialGradient(x, y, 0, x, y, 90 * power);
+    g.addColorStop(0, 'rgba(255,255,255,.95)'); g.addColorStop(1, 'rgba(255,220,120,0)');
+    c.globalAlpha = 1 - age / .15; c.fillStyle = g; c.fillRect(x - 100 * power, y - 100 * power, 200 * power, 200 * power);
+  }
+  c.restore();
+}
+function slashArc(x, y, r, a0, a1, age, col = '#ffffff') {
+  if (age < 0 || age > .4) return;
+  c.save(); c.globalAlpha = 1 - age / .4; c.shadowColor = col; c.shadowBlur = 20;
+  c.strokeStyle = col; c.lineWidth = 10 * (1 - age / .4) + 2; c.lineCap = 'round';
+  c.beginPath(); c.arc(x, y, r, a0, a1, a1 < a0); c.stroke(); c.restore();
+}
+function speedLines(cx, cy, amount, t, col = 'rgba(255,255,255,') {
+  if (amount <= 0) return;
+  c.save();
+  for (let i = 0; i < 70; i++) {
+    const a = rnd(i * 7 + Math.floor(t * 20) * 13) * TAU;
+    const r0 = 260 + rnd(i + Math.floor(t * 20)) * 300, r1 = r0 + 300 + rnd(i * 5) * 400;
+    c.strokeStyle = col + (.25 + rnd(i * 3) * .4) * amount + ')'; c.lineWidth = 1 + rnd(i * 11) * 3;
+    c.beginPath(); c.moveTo(cx + Math.cos(a) * r0, cy + Math.sin(a) * r0); c.lineTo(cx + Math.cos(a) * r1, cy + Math.sin(a) * r1); c.stroke();
+  }
+  c.restore();
+}
+function hLines(t, amount, dir = 1) {
+  c.save();
+  for (let i = 0; i < 40; i++) {
+    const y = rnd(i * 3.3) * H, len = 200 + rnd(i * 9) * 500;
+    const x = ((rnd(i) * W * 2 - t * 2600 * dir) % (W * 2) + W * 2) % (W * 2) - W / 2;
+    c.strokeStyle = `rgba(255,255,255,${.15 * amount + rnd(i * 2) * .25 * amount})`; c.lineWidth = 1 + rnd(i * 4) * 2;
+    c.beginPath(); c.moveTo(x, y); c.lineTo(x + len * dir, y); c.stroke();
+  }
+  c.restore();
+}
+function vLines(t, amount) {
+  c.save();
+  for (let i = 0; i < 40; i++) {
+    const x = rnd(i * 5.1) * W, len = 150 + rnd(i * 9) * 400;
+    const y = ((rnd(i) * H * 2 + t * 2200) % (H * 2)) - H / 2;
+    c.strokeStyle = `rgba(255,255,255,${.3 * amount})`; c.lineWidth = 1 + rnd(i * 4) * 2;
+    c.beginPath(); c.moveTo(x, y); c.lineTo(x, y + len); c.stroke();
+  }
+  c.restore();
+}
+function ring(x, y, age, maxR, col) {
+  if (age < 0 || age > 1) return;
+  c.save(); c.globalAlpha = 1 - age; c.strokeStyle = col; c.lineWidth = 14 * (1 - age) + 2; c.shadowColor = col; c.shadowBlur = 25;
+  c.beginPath(); c.ellipse(x, y, maxR * age, maxR * age * .28, 0, 0, TAU); c.stroke(); c.restore();
+}
+function flash(a, col = '255,255,255') { if (a <= 0) return; c.fillStyle = `rgba(${col},${clamp(a, 0, 1)})`; c.fillRect(0, 0, W, H); }
+function dust(x, y, age, seed) {
+  if (age < 0 || age > 1.4) return;
+  c.save();
+  for (let i = 0; i < 14; i++) {
+    const dir = rnd(seed + i) > .5 ? 1 : -1, sp = 60 + rnd(seed + i * 2) * 160;
+    const px = x + dir * sp * Math.sqrt(age) * 1.4, py = y - rnd(seed + i * 5) * 40 * age - 6;
+    c.fillStyle = `rgba(200,190,170,${.45 * (1 - age / 1.4)})`; ellipse(px, py, 14 + age * 30, 8 + age * 14); c.fill();
+  }
+  c.restore();
+}
+function laser(x1, y1, x2, y2, age) {
+  if (age < 0 || age > .35) return;
+  const k = age / .35;
+  c.save(); c.globalCompositeOperation = 'lighter';
+  c.strokeStyle = '#38e1ff'; c.shadowColor = '#38e1ff'; c.shadowBlur = 30; c.lineCap = 'round';
+  c.lineWidth = 16 * (1 - k) + 2; c.globalAlpha = 1 - k * .6;
+  c.beginPath(); c.moveTo(x1, y1); c.lineTo(x2, y2); c.stroke();
+  c.strokeStyle = '#fff'; c.lineWidth = 5 * (1 - k) + 1; c.stroke();
+  c.restore();
+}
+function afterImages(fn, positions, alpha = .25) {
+  positions.forEach((p, i) => { c.save(); c.globalAlpha = alpha * (i + 1) / positions.length; fn(p); c.restore(); });
+}
+
+// ---------- Fonlar ----------
+function stars(n, alpha, t, seed = 0) {
+  for (let i = 0; i < n; i++) {
+    const tw = .5 + .5 * Math.sin(t * 2 + i);
+    c.fillStyle = `rgba(255,255,255,${alpha * (.3 + tw * .7) * rnd(i + seed)})`;
+    c.fillRect(rnd(i * 3 + seed) * W, rnd(i * 7 + seed) * H * .6, 2, 2);
+  }
+}
+function moon(x, y, r, col = '#fff6d8') {
+  c.save(); c.shadowColor = col; c.shadowBlur = 60; c.fillStyle = col; ellipse(x, y, r, r); c.fill(); c.restore();
+  c.fillStyle = 'rgba(200,190,160,.35)'; ellipse(x - r * .3, y - r * .2, r * .2, r * .18); c.fill(); ellipse(x + r * .25, y + r * .3, r * .15, r * .12); c.fill();
+}
+function mountains(baseY, h, col, seed, off = 0) {
+  c.fillStyle = col; c.beginPath(); c.moveTo(-10, H);
+  for (let x = -10; x <= W + 60; x += 40) {
+    const k = (x + off) / 140;
+    const y = baseY - (Math.sin(k + seed) * .5 + .5) * h - (Math.sin(k * 2.7 + seed * 3) * .5 + .5) * h * .4;
+    c.lineTo(x, y);
+  }
+  c.lineTo(W + 60, H); c.fill();
+}
+function skyline(baseY, off, scale, col, seed, lights) {
+  let x = -((off % 400) + 400) % 400 - 100;
+  let i = Math.floor(off / 400) * 7 + seed;
+  while (x < W + 100) {
+    const w = (60 + rnd(i) * 90) * scale, h = (120 + rnd(i * 2) * 260) * scale;
+    c.fillStyle = col; c.fillRect(x, baseY - h, w, h + 400);
+    if (rnd(i * 4) > .6) { c.fillRect(x + w * .45, baseY - h - 30 * scale, 3, 30 * scale); }
+    if (lights) {
+      for (let wy = baseY - h + 12; wy < baseY - 10; wy += 16 * scale) {
+        for (let wx = x + 8; wx < x + w - 8; wx += 14 * scale) {
+          if (rnd(wx * .37 + wy * .91 + i) > .62) {
+            c.fillStyle = rnd(wx + wy) > .5 ? 'rgba(255,220,120,.75)' : 'rgba(120,220,255,.6)';
+            c.fillRect(wx, wy, 5 * scale, 7 * scale);
+          }
+        }
+      }
+      c.fillStyle = col;
+    }
+    x += w + 8 * scale; i++;
+  }
+}
+function rain(t, amount, wind = -.25) {
+  if (amount <= 0) return;
+  c.save(); c.strokeStyle = `rgba(170,200,255,${.35 * amount})`; c.lineWidth = 1.2;
+  c.beginPath();
+  for (let i = 0; i < 260 * amount; i++) {
+    const sp = 900 + rnd(i) * 500;
+    const y = ((rnd(i * 3) * H + t * sp) % (H + 40)) - 20;
+    const x = ((rnd(i * 7) * W - y * wind * 1) % W + W) % W;
+    c.moveTo(x, y); c.lineTo(x + wind * 30, y + 26);
+  }
+  c.stroke(); c.restore();
+}
+function petals(t, amount, windX = 60) {
+  for (let i = 0; i < 60 * amount; i++) {
+    const sp = 30 + rnd(i) * 50;
+    const y = ((rnd(i * 2) * H + t * sp) % (H + 40)) - 20;
+    const x = ((rnd(i * 5) * W + t * windX + Math.sin(t + i) * 30) % (W + 40) + W + 40) % (W + 40) - 20;
+    c.save(); c.translate(x, y); c.rotate(t * 2 + i);
+    c.fillStyle = rnd(i * 9) > .5 ? '#ffb7d0' : '#ffd6e4'; ellipse(0, 0, 6, 3.5); c.fill(); c.restore();
+  }
+}
+function leaves(t, amount) {
+  for (let i = 0; i < 30 * amount; i++) {
+    const sp = 200 + rnd(i) * 300;
+    const x = ((rnd(i * 5) * W + t * sp) % (W + 80)) - 40;
+    const y = rnd(i * 2) * H * .8 + Math.sin(t * 3 + i) * 30;
+    c.save(); c.translate(x, y); c.rotate(t * 6 + i);
+    c.fillStyle = rnd(i * 4) > .5 ? 'rgba(160,200,90,.8)' : 'rgba(220,180,80,.8)'; ellipse(0, 0, 7, 3); c.fill(); c.restore();
+  }
+}
+function sakuraTree(x, y, s, t) {
+  c.save(); c.translate(x, y); c.scale(s, s);
+  c.strokeStyle = '#3b2420'; c.lineCap = 'round';
+  const branch = (len, ang, w, d) => {
+    c.save(); c.rotate(ang); c.lineWidth = w; c.beginPath(); c.moveTo(0, 0); c.lineTo(0, -len); c.stroke(); c.translate(0, -len);
+    if (d > 0) {
+      branch(len * .72, -.45 + Math.sin(t * .8 + d) * .02, w * .68, d - 1);
+      branch(len * .7, .5 + Math.sin(t * .7 + d) * .02, w * .68, d - 1);
+    } else {
+      for (let i = 0; i < 6; i++) {
+        c.fillStyle = i % 2 ? 'rgba(255,170,200,.85)' : 'rgba(255,205,225,.85)';
+        ellipse(Math.cos(i) * 24, Math.sin(i * 2) * 18, 30, 24); c.fill();
+      }
+    }
+    c.restore();
+  };
+  branch(120, 0, 26, 4);
+  c.restore();
+}
+function grass(baseY, t, col, wind = 1) {
+  c.strokeStyle = col; c.lineWidth = 2;
+  c.beginPath();
+  for (let i = 0; i < 160; i++) {
+    const x = rnd(i) * W, h = 14 + rnd(i * 3) * 26;
+    const sway = Math.sin(t * 3 + x * .02) * 8 * wind;
+    c.moveTo(x, baseY + rnd(i * 2) * 60); c.quadraticCurveTo(x + sway * .5, baseY + rnd(i * 2) * 60 - h / 2, x + sway, baseY + rnd(i * 2) * 60 - h);
+  }
+  c.stroke();
+}
+function letterbox(a) { if (a <= 0) return; const h = 70 * a; c.fillStyle = '#000'; c.fillRect(0, 0, W, h); c.fillRect(0, H - h, W, h); }
+function bigText(txt, a, size = 110, col = '#fff', y = H / 2, sub) {
+  if (a <= 0) return;
+  c.save(); c.globalAlpha = clamp(a, 0, 1); c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.font = `900 ${size}px "Segoe UI", Impact, sans-serif`;
+  c.lineWidth = 10; c.strokeStyle = '#000'; c.strokeText(txt, W / 2, y);
+  c.shadowColor = col; c.shadowBlur = 30; c.fillStyle = col; c.fillText(txt, W / 2, y);
+  if (sub) { c.font = `600 ${size * .3}px "Segoe UI", sans-serif`; c.shadowBlur = 0; c.fillStyle = '#fff'; c.fillText(sub, W / 2, y + size * .75); }
+  c.restore();
+}
+
+// ---------- SAHNALAR ----------
+// Har bir sahna: [boshlanish, tugash, funksiya(lt, t)]
+const SCENES = [];
+function scene(a, b, fn) { SCENES.push({ a, b, fn }); }
+
+// 0. Sarlavha
+scene(0, 14, (lt, t) => {
+  const g = c.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#05030f'); g.addColorStop(1, '#1a0a26'); c.fillStyle = g; c.fillRect(0, 0, W, H);
+  stars(160, 1, t);
+  // ikki rangli diagonal
+  const k = ease(prog(lt, .5, 2.5));
+  c.save(); c.globalAlpha = .9;
+  c.fillStyle = '#0d3a5c'; c.beginPath(); c.moveTo(0, 0); c.lineTo(W * .55 * k, 0); c.lineTo(W * .45 * k, H); c.lineTo(0, H); c.fill();
+  c.fillStyle = '#5c0d18'; c.beginPath(); c.moveTo(W, 0); c.lineTo(W - W * .45 * k, 0); c.lineTo(W - W * .55 * k, H); c.lineTo(W, H); c.fill();
+  c.restore();
+  // siluetlar
+  const ra = prog(lt, 2, 4);
+  c.save(); c.globalAlpha = ra;
+  drawRobot(lerp(160, 300, ease(ra)), 640, 2.2, 1, pose('stance', lt), lt, { blade: 1, noShadow: true });
+  drawSamurai(lerp(1120, 980, ease(ra)), 640, 2.2, -1, pose('stance', lt), lt, { noShadow: true });
+  c.restore();
+  speedLines(W / 2, H / 2, prog(lt, 3.5, 4.5) * (1 - prog(lt, 12, 14)), lt);
+  if (lt > 4) sparks(W / 2, H / 2 - 40, lt - 4, 99, '#ffe36e', 30, 1.4);
+  flash(1 - prog(lt, 4, 4.4));
+  bigText("TEMIR VA PO'LAT", prog(lt, 4.2, 5.2), 104, '#38e1ff', H / 2 - 30, "Robot va Samuray jangi");
+  c.save(); c.globalAlpha = prog(lt, 7, 8) * (1 - prog(lt, 12.5, 13.5)); c.fillStyle = '#ffd36e'; c.font = '600 22px "Segoe UI", sans-serif'; c.textAlign = 'center';
+  c.fillText('— Anime multfilm —', W / 2, H - 70); c.restore();
+});
+
+// 1. Neon shahar va robot
+scene(14, 50, (lt, t) => {
+  const g = c.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#070818'); g.addColorStop(.6, '#2a0f3e'); g.addColorStop(1, '#5a1a4a'); c.fillStyle = g; c.fillRect(0, 0, W, H);
+  stars(80, .6, t);
+  moon(1040, 140, 60, '#ffd6f0');
+  const cam = lt * 18;
+  skyline(560, cam * .3, .8, '#1b1033', 1, false);
+  skyline(620, cam * .6, 1, '#120a24', 2, true);
+  // neon yozuvlar
+  const neon = (txt, x, y, col) => {
+    c.save(); c.font = '700 28px "Segoe UI", sans-serif'; c.shadowColor = col; c.shadowBlur = 20; c.fillStyle = Math.sin(t * 7 + x) > -.85 ? col : '#333'; c.fillText(txt, x, y); c.restore();
+  };
+  neon('NEO-TOSHKENT', 120 - (cam * .6) % 1400 + 200, 330, '#ff4fd8');
+  neon('2187', 760 - (cam * .6) % 1400 + 400, 400, '#38e1ff');
+  // uchar mashinalar
+  for (let i = 0; i < 5; i++) {
+    const x = ((t * (120 + i * 40) + i * 300) % (W + 200)) - 100, y = 180 + i * 50;
+    c.fillStyle = i % 2 ? '#ff4fd8' : '#38e1ff'; c.fillRect(x, y, 26, 5); c.fillStyle = 'rgba(255,255,255,.3)'; c.fillRect(x - 30, y + 1, 30, 2);
+  }
+  // tom
+  c.fillStyle = '#0b0716'; c.fillRect(0, 600, W, 120);
+  c.fillStyle = '#1d1435'; c.fillRect(0, 600, W, 6);
+  // Robot
+  let rx = 640, ry = 600, ps = pose('idle', lt), thrust = 0, sc = 1.25;
+  if (lt > 2 && lt < 6) { sc = lerp(1.25, 1.5, ease(prog(lt, 2, 6))); }
+  if (lt >= 6) sc = 1.5;
+  if (lt > 30) { // uchish
+    const k = prog(lt, 30, 35);
+    ps = pose('jump', lt); thrust = 1;
+    rx = lerp(640, 1500, k * k); ry = lerp(600, -300, k * k);
+  } else if (lt > 28) { ps = pose('stance', lt); thrust = .3; }
+  // vizor yoqilishi
+  const eye = lt < 3 ? (Math.sin(lt * 20) > 0 && lt > 1.5 ? '#38e1ff' : '#123') : '#38e1ff';
+  drawRobot(rx, ry, sc, 1, ps, lt, { eyeCol: eye, thrust });
+  if (lt > 1.5 && lt < 3) { c.save(); c.globalAlpha = .4; flash(.08, '56,225,255'); c.restore(); }
+  // HUD
+  if (lt > 17 && lt < 30) {
+    const a = prog(lt, 17, 18) * (1 - prog(lt, 29, 30));
+    c.save(); c.globalAlpha = a; c.strokeStyle = '#38e1ff'; c.lineWidth = 2; c.font = '600 16px monospace'; c.fillStyle = '#38e1ff';
+    c.strokeRect(60, 80, 300, 130);
+    c.fillText('KAZE-01 // TIZIM', 76, 108);
+    c.fillText('QUVVAT: ' + Math.min(100, Math.floor((lt - 17) * 40)) + '%', 76, 136);
+    c.fillText('SIGNAL: ' + (lt > 18 ? 'ANIQLANDI ⚠' : '...'), 76, 164);
+    c.fillText('YO\'NALISH: SHARQ TOG\'LARI', 76, 192);
+    // radar
+    c.beginPath(); c.arc(1150, 600, 70, 0, TAU); c.stroke();
+    c.beginPath(); c.moveTo(1150, 600); c.lineTo(1150 + Math.cos(t * 3) * 70, 600 + Math.sin(t * 3) * 70); c.stroke();
+    c.fillStyle = '#ff3b4e'; ellipse(1110, 570, 5, 5); c.fill();
+    c.restore();
+  }
+  rain(t, 1);
+  if (lt > 30) speedLines(W / 2, H / 2, .6 * prog(lt, 30, 31), t);
+});
+
+// 2. Sakura tog'lari va samuray
+scene(50, 86, (lt, t) => {
+  const g = c.createLinearGradient(0, 0, 0, H); g.addColorStop(0, '#0e1430'); g.addColorStop(.7, '#3b2a55'); g.addColorStop(1, '#6d3a5a'); c.fillStyle = g; c.fillRect(0, 0, W, H);
+  stars(120, .8, t, 5);
+  moon(300, 170, 95);
+  mountains(470, 200, '#2a2246', 1, lt * 4);
+  mountains(540, 140, '#1c1833', 4, lt * 8);
+  // pagoda
+  c.save(); c.translate(1000 - lt * 3, 520); c.fillStyle = '#140f22';
+  for (let i = 0; i < 4; i++) { c.beginPath(); c.moveTo(-70 + i * 12, -i * 50); c.lineTo(70 - i * 12, -i * 50); c.lineTo(40 - i * 10, -i * 50 - 30); c.lineTo(-40 + i * 10, -i * 50 - 30); c.fill(); c.fillRect(-30 + i * 8, -i * 50 - 30, 60 - i * 16, 30); }
+  c.restore();
+  c.fillStyle = '#1a1226'; c.fillRect(0, 600, W, 120);
+  grass(600, t, '#2b2042', .6);
+  sakuraTree(220, 610, 1.15, t);
+  // Samuray
+  let ps = pose('idle', lt), sx = 760, sw = 0;
+  let slash = -1;
+  if (lt > 14 && lt < 26) {
+    const ph = ((lt - 14) % 1.5) / 1.5; ps = pose('attack', lt, ph); slash = (lt - 14) % 1.5 - .4;
+  } else if (lt >= 26 && lt < 30) ps = pose('guard', lt);
+  else if (lt >= 30) ps = pose('idle', lt);
+  const sc = lt < 8 ? lerp(1.2, 1.55, ease(prog(lt, 0, 8))) : 1.55;
+  drawSamurai(sx, 610, sc, -1, ps, lt, { swordGlow: sw });
+  if (slash >= 0) slashArc(sx - 60, 610 - 170, 120, -2.6, -.5, slash, '#ffe6f0');
+  // osmonda robot o'tadi
+  if (lt > 29 && lt < 33) {
+    const k = prog(lt, 29, 33);
+    const x = lerp(-100, 1400, k), y = lerp(80, 260, k);
+    c.save(); c.strokeStyle = 'rgba(56,225,255,.7)'; c.lineWidth = 4; c.shadowColor = '#38e1ff'; c.shadowBlur = 20;
+    c.beginPath(); c.moveTo(x - 220, y - 30); c.lineTo(x, y); c.stroke(); c.fillStyle = '#fff'; ellipse(x, y, 8, 8); c.fill(); c.restore();
+  }
+  petals(t, 1, 50);
+});
+
+// 3. Qarama-qarshi turish (dala)
+function fieldBG(t, lt, tint = 0, sky) {
+  const g = c.createLinearGradient(0, 0, 0, H);
+  if (sky === 'storm') { g.addColorStop(0, '#0b0b14'); g.addColorStop(.7, '#262033'); g.addColorStop(1, '#3a2a30'); }
+  else if (sky === 'dawn') { g.addColorStop(0, '#2c3d7a'); g.addColorStop(.45, '#f08a5d'); g.addColorStop(.7, '#ffd27a'); g.addColorStop(1, '#ffe9b0'); }
+  else { g.addColorStop(0, '#1b2a50'); g.addColorStop(.6, '#c0566a'); g.addColorStop(1, '#ff9b6a'); }
+  c.fillStyle = g; c.fillRect(0, 0, W, H);
+  if (sky === 'dawn') {
+    const sy = lerp(640, 470, prog(lt, 0, 25));
+    c.save(); c.shadowColor = '#ffdd88'; c.shadowBlur = 80; c.fillStyle = '#fff2c0'; ellipse(W / 2, sy, 110, 110); c.fill(); c.restore();
+  } else if (sky !== 'storm') {
+    c.save(); c.shadowColor = '#ffb070'; c.shadowBlur = 60; c.fillStyle = '#ffd9a0'; ellipse(640, 470, 90, 90); c.fill(); c.restore();
+  }
+  mountains(500, 160, sky === 'storm' ? '#1a1626' : sky === 'dawn' ? '#7a4a6a' : '#4a2a4f', 2, 0);
+  mountains(560, 90, sky === 'storm' ? '#14111d' : sky === 'dawn' ? '#4a2f4f' : '#2e1c36', 7, 0);
+  c.fillStyle = sky === 'storm' ? '#15121c' : sky === 'dawn' ? '#3c3a2a' : '#2a1f2a'; c.fillRect(0, 590, W, 130);
+  grass(590, t, sky === 'dawn' ? '#5c6a3a' : '#3a2f3a', 1.3);
+}
+scene(86, 112, (lt, t) => {
+  fieldBG(t, lt);
+  // Robot qo'nadi
+  let ry = 620, rps = pose('idle', lt);
+  if (lt < 2) { ry = lerp(-200, 620, prog(lt, 0, 1.2)); rps = pose('jump', lt); }
+  if (lt >= 1.2 && lt < 2.2) rps = pose('kneel', lt);
+  const blade = lt > 20 ? ease(prog(lt, 20, 21)) : 0;
+  if (lt > 20) rps = pose('stance', lt);
+  const sps = lt > 20 ? pose('stance', lt) : pose('idle', lt);
+  const zoom = lerp(1, 1.12, prog(lt, 4, 20));
+  c.save(); c.translate(W / 2, H * .85); c.scale(zoom, zoom); c.translate(-W / 2, -H * .85);
+  drawRobot(880, ry, 1.35, -1, rps, lt, { thrust: lt < 1.2 ? 1 : 0, blade });
+  drawSamurai(400, 620, 1.35, 1, sps, lt, { windBoost: 6, eyeGlow: lt > 20 });
+  c.restore();
+  dust(880, 620, lt - 1.2, 7);
+  if (lt > 1.2 && lt < 1.6) flash(.3 * (1 - prog(lt, 1.2, 1.6)));
+  leaves(t, 1);
+  // keskinlik chiziqlari
+  if (lt > 21) {
+    c.save(); c.globalAlpha = .5 + Math.sin(t * 20) * .2;
+    c.strokeStyle = '#38e1ff'; c.lineWidth = 3; c.beginPath(); c.moveTo(W / 2 + 10, 300); c.lineTo(W / 2 + 40, 330); c.lineTo(W / 2 + 10, 360); c.lineTo(W / 2 + 40, 390); c.stroke();
+    c.strokeStyle = '#ff3b4e'; c.beginPath(); c.moveTo(W / 2 - 10, 300); c.lineTo(W / 2 - 40, 330); c.lineTo(W / 2 - 10, 360); c.lineTo(W / 2 - 40, 390); c.stroke();
+    c.restore();
+  }
+  letterbox(prog(lt, 2, 4));
+});
+
+// 4. Jang — 1-qism
+const B1 = 112;
+const clashTimes1 = [];
+for (let i = 0; i < 14; i++) clashTimes1.push(8 + i * .8);
+scene(112, 162, (lt, t) => {
+  const air = lt >= 40;
+  if (!air) fieldBG(t, lt);
+  let shake = 0;
+  // kamera
+  c.save();
+  let rx = 900, sx = 380, ry = 620, sy = 620, rps = pose('stance', lt), sps = pose('stance', lt);
+  let rOpt = { blade: 1 }, sOpt = {}, fx = [];
+  if (lt < 5) { /* tayyorlanish */ }
+  else if (lt < 8) {
+    const k = prog(lt, 5, 8);
+    rx = lerp(900, 690, k * k); sx = lerp(380, 590, k * k); rps = pose('run', lt); sps = pose('run', lt);
+  } else if (lt < 20) {
+    const i = Math.floor((lt - 8) / .8), ph = ((lt - 8) % .8) / .8;
+    rx = 690 + Math.sin(lt * 1.3) * 30; sx = 590 + Math.sin(lt * 1.3) * 30;
+    if (i % 2 === 0) { sps = pose('attack', lt, ph); rps = pose('guard', lt); }
+    else { rps = pose('attack', lt, ph); sps = pose('guard', lt); }
+    const ci = Math.floor((lt - 8) / .8), age = (lt - 8) - ci * .8;
+    fx.push(() => sparks((rx + sx) / 2, 470, age, ci * 17 + 3));
+    if (age < .12) shake = 8;
+  } else if (lt < 30) {
+    const back = prog(lt, 20, 21.5);
+    rx = lerp(690, 1050, ease(back)); ry = 620 - Math.sin(back * PI) * 140;
+    rps = back < 1 ? pose('jump', lt) : pose('shoot', lt);
+    rOpt = { blade: 0 };
+    sx = lerp(590, 430, prog(lt, 21.5, 30)); sps = pose('guard', lt);
+    if (lt > 21.5) {
+      const n = Math.floor((lt - 21.5) / .7), age = (lt - 21.5) - n * .7;
+      const hx = sx + 60, hy = 470 - (n % 3) * 30;
+      fx.push(() => laser(rx - 80, ry - 140 * 1.35 + 30, hx, hy, age));
+      fx.push(() => sparks(hx, hy, age - .05, n * 31 + 1, '#9ff3ff', 14));
+      if (age < .1) shake = 6;
+    }
+  } else if (lt < 40) {
+    if (lt < 30.5) {
+      const k = prog(lt, 30, 30.4);
+      const px = lerp(430, 1180, k);
+      fx.push(() => afterImages(p => drawSamurai(p, 620, 1.35, 1, pose('run', lt), lt), [px - 300, px - 200, px - 100], .35));
+      sx = px; sps = pose('run', lt); rx = 1050; rps = pose('shoot', lt); rOpt = {};
+      fx.push(() => hLines(lt, 1, -1));
+    } else {
+      const hitAge = lt - 30.5;
+      sx = 1180; rx = lerp(1050, 820, ease(prog(lt, 30.5, 31.5)));
+      sps = hitAge < .6 ? pose('attack', lt, .9) : pose('stance', lt);
+      rps = hitAge < 1.6 ? pose('hit', lt) : pose('stance', lt);
+      rOpt = { blade: prog(lt, 32, 32.5), damage: true };
+      if (lt > 34) { // yana to'qnashuv markazga
+        const k = prog(lt, 34, 36);
+        rx = lerp(820, 700, k); sx = lerp(1180, 820, k);
+        if (lt > 36) {
+          const i = Math.floor((lt - 36) / .6), ph = ((lt - 36) % .6) / .6;
+          if (i % 2) { rps = pose('attack', lt, ph); sps = pose('guard', lt); } else { sps = pose('attack', lt, ph); rps = pose('guard', lt); }
+          const age = (lt - 36) - i * .6; fx.push(() => sparks(760, 470, age, i * 13 + 70)); if (age < .1) shake = 7;
+        } else { rps = pose('run', lt); sps = pose('run', lt); }
+      }
+      fx.push(() => slashArc(1000, 470, 140, -2.4, .4, hitAge, '#ffffff'));
+      fx.push(() => sparks(1000, 460, hitAge, 555, '#ffe36e', 26, 1.3));
+      if (hitAge < .2) shake = 14;
+    }
+  } else { // havoda
+    const la = lt - 40;
+    const up = Math.min(1, la / 1) * 190;
+    const i = Math.floor(la / 1.2), age = la - i * 1.2;
+    const side = i % 2 ? 1 : -1;
+    const meetX = 640 + side * 120;
+    const k = clamp(age / .5, 0, 1);
+    rx = lerp(meetX + 240, meetX + 55, ease(k)); sx = lerp(meetX - 240, meetX - 55, ease(k));
+    ry = 620 - up + Math.sin(la * 2) * 20; sy = 620 - up - Math.sin(la * 2) * 20;
+    if (la > 9.2) { const d = prog(la, 9.2, 10); ry = lerp(ry, 620, d); sy = lerp(sy, 620, d); }
+    rps = k < 1 ? pose('jump', lt) : pose('attack', lt, .9); sps = k < 1 ? pose('jump', lt) : pose('attack', lt, .9);
+    rOpt = { blade: 1, thrust: 1, noShadow: true }; sOpt = { noShadow: true };
+    fx.push(() => vLines(lt, .8));
+    if (age > .5) { fx.push(() => sparks(meetX, (ry + sy) / 2 - 150, age - .5, i * 41 + 9, '#ffffff', 24, 1.3)); if (age < .6) shake = 12; }
+  }
+  if (shake) c.translate((rnd(t * 100) - .5) * shake * 2, (rnd(t * 200) - .5) * shake * 2);
+  if (air) {
+    const off = 220 * Math.min(1, (lt - 40)) * (1 - prog(lt, 49.2, 50));
+    c.save(); c.fillStyle = '#1b2a50'; c.fillRect(-40, -40, W + 80, off + 60); c.translate(0, off); fieldBG(t, lt); c.restore();
+  }
+  drawSamurai(sx, sy, 1.35, sx < rx ? 1 : -1, sps, lt, sOpt);
+  drawRobot(rx, ry, 1.35, rx > sx ? -1 : 1, rps, lt, rOpt);
+  fx.forEach(f => f());
+  if (lt > 5 && lt < 8) hLines(lt, .6 * prog(lt, 5, 6), 1);
+  c.restore();
+  leaves(t, .7);
+  letterbox(1);
+  bigText('JANG!', prog(lt, .6, 1.2) * (1 - prog(lt, 4, 5)), 160, '#ff3b4e');
+  // to'qnashuv flash
+  if (lt > 8 && lt < 8.3) flash(.8 * (1 - prog(lt, 8, 8.3)));
+});
+
+// 5. Jang — 2-qism
+scene(162, 200, (lt, t) => {
+  let shake = 0;
+  if (lt < 10) { // ko'zlar close-up
+    const split = (y0, h, bg, draw) => {
+      c.save(); c.beginPath(); c.rect(0, y0, W, h); c.clip();
+      c.fillStyle = bg; c.fillRect(0, y0, W, h); speedLines(W / 2, y0 + h / 2, .4, lt); draw(); c.restore();
+    };
+    split(0, H / 2, '#12081a', () => { // samuray ko'zi
+      c.save(); c.translate(W / 2 + Math.sin(lt * .5) * 20, H / 4);
+      c.fillStyle = '#e8b98f'; c.fillRect(-W / 2 - 40, -200, W + 80, 400);
+      c.fillStyle = '#121218'; c.fillRect(-W / 2 - 40, -200, W + 80, 90);
+      c.fillStyle = '#f4f4f4'; c.fillRect(-W / 2 - 40, -115, W + 80, 26);
+      for (const ex of [-230, 230]) {
+        c.fillStyle = '#fff'; c.beginPath(); c.moveTo(ex - 120, 10); c.quadraticCurveTo(ex, -50, ex + 120, 0); c.quadraticCurveTo(ex, 50, ex - 120, 10); c.fill();
+        c.fillStyle = '#3a1a10'; ellipse(ex + 10, 5, 34, 34); c.fill(); c.fillStyle = '#000'; ellipse(ex + 10, 5, 16, 16); c.fill();
+        c.fillStyle = '#fff'; ellipse(ex + 22, -8, 8, 8); c.fill();
+        c.strokeStyle = '#111'; c.lineWidth = 10; c.beginPath(); c.moveTo(ex - 130, -40 + (ex > 0 ? -10 : 0)); c.lineTo(ex + 130, -60 + (ex > 0 ? 10 : 0)); c.stroke();
+      }
+      c.restore();
+    });
+    split(H / 2, H / 2, '#06121c', () => { // robot ko'zi
+      c.save(); c.translate(W / 2 - Math.sin(lt * .5) * 20, H * .75);
+      c.fillStyle = '#e6ecfb'; c.fillRect(-W / 2 - 40, -200, W + 80, 400);
+      c.fillStyle = '#2a3560'; c.fillRect(-W / 2 - 40, -60, W + 80, 120);
+      c.save(); c.shadowColor = '#38e1ff'; c.shadowBlur = 40; c.fillStyle = '#38e1ff'; rr(-420, -24, 840, 48, 24); c.fill();
+      c.fillStyle = '#fff'; c.fillRect(-420 + ((lt * 300) % 840), -24, 40, 48); c.restore();
+      c.restore();
+    });
+    c.fillStyle = '#000'; c.fillRect(0, H / 2 - 3, W, 6);
+  } else {
+    fieldBG(t, lt, 0, lt > 26 ? 'storm' : undefined);
+    c.save();
+    let rx = 900, sx = 380, ry = 620, sy = 620, rps = pose('stance', lt), sps = pose('stance', lt), rOpt = { blade: 1 }, fx = [];
+    if (lt < 18) { // raketa musht
+      rps = lt > 11 ? pose('shoot', lt) : pose('stance', lt); rOpt = { blade: 0, noFist: lt > 11.5 };
+      if (lt > 11.5 && lt < 13) {
+        const k = prog(lt, 11.5, 13);
+        const fx0 = lerp(800, 470, k), fy = 450;
+        fx.push(() => {
+          c.save(); c.translate(fx0, fy); c.fillStyle = '#cdd6ee'; rr(-20, -16, 44, 32, 10); c.fill(); c.strokeStyle = '#3a4466'; c.lineWidth = 3; c.stroke();
+          const g = c.createLinearGradient(20, 0, 120, 0); g.addColorStop(0, '#fff'); g.addColorStop(.3, '#ff9b3b'); g.addColorStop(1, 'rgba(255,80,0,0)');
+          c.fillStyle = g; c.beginPath(); c.moveTo(22, -10); c.lineTo(110 + Math.sin(t * 50) * 10, 0); c.lineTo(22, 10); c.fill(); c.restore();
+        });
+        sps = pose('guard', lt);
+      }
+      if (lt >= 13) {
+        const age = lt - 13; sps = age < .6 ? pose('attack', lt, .9) : pose('stance', lt);
+        fx.push(() => slashArc(470, 450, 90, -2, 1.2, age, '#fff'));
+        fx.push(() => sparks(470, 450, age, 777, '#ff9b3b', 30, 1.5));
+        fx.push(() => ring(470, 460, age * 1.5, 300, '#ff9b3b'));
+        if (age < .25) shake = 16;
+      }
+    } else if (lt < 28) {
+      const la = lt - 18;
+      if (la < 2) { // sakrab urish
+        const k = prog(la, 0, 2);
+        rx = lerp(900, 640, k); ry = 620 - Math.sin(k * PI) * 260; rps = pose('jump', lt); rOpt.thrust = 1;
+        sps = pose('guard', lt);
+      } else {
+        rx = 640; rps = la < 3 ? pose('kneel', lt) : pose('stance', lt);
+        const age = la - 2;
+        fx.push(() => ring(640, 620, age * .8, 900, '#38e1ff'));
+        fx.push(() => dust(640, 620, age, 21));
+        if (age < .3) shake = 20;
+        // samuray to'lqindan sakraydi
+        const j = prog(la, 2, 4);
+        sx = lerp(380, 520, j); sy = 620 - Math.sin(j * PI) * 220; sps = j < 1 ? pose('jump', lt) : pose('stance', lt);
+        if (la > 5) { // tez to'qnashuvlar
+          const i = Math.floor((la - 5) / .35), ag = (la - 5) - i * .35;
+          sx = 560 + Math.sin(la * 7) * 10; rx = 690 + Math.sin(la * 7) * 10;
+          if (i % 2) { sps = pose('attack', lt, ag / .35); rps = pose('guard', lt); } else { rps = pose('attack', lt, ag / .35); sps = pose('guard', lt); }
+          fx.push(() => sparks(625 + (rnd(i) - .5) * 60, 440 + (rnd(i * 3) - .5) * 80, ag, i * 23 + 400, i % 2 ? '#ffb347' : '#9ff3ff', 16));
+          fx.push(() => speedLines(625, 450, .7, lt));
+          if (ag < .06) shake = 6;
+        }
+      }
+    } else { // ajralish, nafas olish
+      const k = prog(lt, 28, 29.5);
+      rx = lerp(690, 900, ease(k)); sx = lerp(560, 380, ease(k));
+      rps = pose('pant', lt); sps = pose('pant', lt); rOpt = { blade: 1, damage: true };
+    }
+    if (shake) c.translate((rnd(t * 100) - .5) * shake * 2, (rnd(t * 200) - .5) * shake * 2);
+    drawSamurai(sx, sy, 1.35, sx < rx ? 1 : -1, sps, lt, {});
+    drawRobot(rx, ry, 1.35, -1, rps, lt, rOpt);
+    fx.forEach(f => f());
+    c.restore();
+    rain(t, prog(lt, 26, 30));
+    if (lt > 26 && Math.sin(t * 1.7) > .985) flash(.5, '200,210,255');
+    letterbox(1);
+  }
+  if (lt > 9.7 && lt < 10.2) flash(1 - prog(lt, 9.7, 10.2) * 1);
+});
+
+// 6. Kulminatsiya
+scene(200, 240, (lt, t) => {
+  const sky = lt < 28 ? 'storm' : 'storm';
+  fieldBG(t, lt, 0, sky);
+  // chaqmoqlar
+  if (lt < 25 && (Math.floor(t * 3) % 7 === 0)) {
+    c.save(); c.strokeStyle = 'rgba(220,230,255,.9)'; c.lineWidth = 3; c.shadowColor = '#fff'; c.shadowBlur = 20; c.beginPath();
+    let lx = 200 + rnd(Math.floor(t * 3)) * 880, ly = 0; c.moveTo(lx, ly);
+    while (ly < 520) { lx += (rnd(lx + ly) - .5) * 80; ly += 40 + rnd(ly) * 40; c.lineTo(lx, ly); }
+    c.stroke(); c.restore();
+  }
+  // yer yoriqlari
+  const crack = prog(lt, 4, 15);
+  if (crack > 0) {
+    c.save(); c.strokeStyle = `rgba(255,${180 - crack * 80},80,${crack})`; c.lineWidth = 3; c.shadowColor = '#ff7a3c'; c.shadowBlur = 15;
+    for (let i = 0; i < 8; i++) {
+      c.beginPath(); let x = 640, y = 640; c.moveTo(x, y);
+      for (let j = 0; j < 6 * crack; j++) { x += (i < 4 ? -1 : 1) * (30 + rnd(i * 10 + j) * 40); y += (rnd(i * 7 + j) - .5) * 30; c.lineTo(x, y); }
+      c.stroke();
+    }
+    c.restore();
+  }
+  // ko'tarilayotgan toshlar
+  if (lt < 25) {
+    for (let i = 0; i < 24; i++) {
+      const st = 2 + rnd(i) * 10; if (lt < st) continue;
+      const y = 640 - (lt - st) * (30 + rnd(i * 2) * 40);
+      c.fillStyle = '#4a3a3a'; c.save(); c.translate(rnd(i * 5) * W, y); c.rotate(lt + i); c.fillRect(-6 - rnd(i) * 8, -6, 12 + rnd(i) * 16, 12); c.restore();
+    }
+  }
+  let rx = 900, sx = 380, rps = pose('power', lt), sps = pose('power', lt), glow = ease(prog(lt, 0, 12));
+  let shake = lt < 25 ? glow * 3 : 0;
+  c.save();
+  if (lt >= 15 && lt < 25) {
+    const k = prog(lt, 15, 25);
+    const kk = Math.pow(k, 1.6);
+    rx = lerp(900, 700, kk); sx = lerp(380, 580, kk);
+    rps = pose('run', lt * .35); sps = pose('run', lt * .35);
+    speedLines(640, 420, k, t);
+  } else if (lt >= 25) {
+    rx = 330; sx = 950; // bir-biridan o'tib ketdi
+    rps = pose('attack', lt, .95); sps = pose('attack', lt, .95);
+    if (lt > 33) { rps = pose('kneel', lt); }
+    if (lt > 35) { sps = pose('kneel', lt); }
+    if (lt > 37.5) { rps = pose('idle', lt); sps = pose('idle', lt); }
+    glow = Math.max(0, 1 - prog(lt, 28, 32));
+  }
+  if (shake) c.translate((rnd(t * 100) - .5) * shake * 2, (rnd(t * 200) - .5) * shake * 2);
+  const after = lt >= 25;
+  drawRobot(rx, 620, 1.4, after ? 1 : -1, rps, lt, { blade: 1, glow, coreCol: lt > 8 && lt < 30 ? '#ffffff' : '#38e1ff', damage: lt > 30 });
+  drawSamurai(sx, 620, 1.4, after ? -1 : 1, sps, lt, { glow, swordGlow: lt < 32 ? glow : 0, eyeGlow: lt < 30 });
+  c.restore();
+  // Yakuniy zarba
+  if (lt >= 24.6 && lt < 25) flash(prog(lt, 24.6, 25));
+  if (lt >= 25 && lt < 28.5) {
+    flash(1 - prog(lt, 26.5, 28.5));
+    c.save(); c.globalCompositeOperation = 'lighter';
+    const r = (lt - 25) * 700;
+    const g = c.createRadialGradient(640, 450, 0, 640, 450, r + 1); g.addColorStop(0, 'rgba(255,255,255,.8)'); g.addColorStop(.6, 'rgba(56,225,255,.4)'); g.addColorStop(1, 'rgba(255,60,60,0)');
+    c.fillStyle = g; c.fillRect(0, 0, W, H); c.restore();
+  }
+  // tutun
+  if (lt >= 26 && lt < 36) {
+    const a = 1 - prog(lt, 28, 36);
+    for (let i = 0; i < 30; i++) {
+      c.fillStyle = `rgba(180,170,170,${.25 * a})`;
+      ellipse(rnd(i) * W + (lt - 26) * (rnd(i * 2) - .5) * 40, 400 + rnd(i * 3) * 300 - (lt - 26) * 8, 80 + rnd(i * 4) * 80, 50 + rnd(i) * 40); c.fill();
+    }
+  }
+  rain(t, 1 - prog(lt, 30, 38));
+  if (lt < 15) { // vertikal energiya
+    c.save(); c.globalCompositeOperation = 'lighter';
+    c.fillStyle = `rgba(56,225,255,${.15 * glow})`; c.fillRect(rx - 60, 0, 120, 620);
+    c.fillStyle = `rgba(255,80,60,${.15 * glow})`; c.fillRect(sx - 60, 0, 120, 620);
+    c.restore();
+  }
+  letterbox(1);
+  if (lt >= 15 && lt < 24.6) { // slow motion yozuvi
+    c.save(); c.globalAlpha = .5; c.fillStyle = '#fff'; c.font = 'italic 600 20px "Segoe UI", sans-serif'; c.fillText('sekin harakat...', 40, 110); c.restore();
+  }
+});
+
+// 7. Tong — do'stlik
+scene(240, 282, (lt, t) => {
+  fieldBG(t, lt, 0, 'dawn');
+  // qushlar
+  c.strokeStyle = '#3a2a40'; c.lineWidth = 2;
+  for (let i = 0; i < 6; i++) {
+    const x = ((lt * 40 + i * 140) % (W + 200)) - 100, y = 150 + rnd(i) * 120 + Math.sin(lt + i) * 10, w = Math.sin(t * 6 + i) * 6;
+    c.beginPath(); c.moveTo(x - 10, y - w); c.lineTo(x, y); c.lineTo(x + 10, y - w); c.stroke();
+  }
+  let rx = 760, sx = 520, rps = pose('idle', lt), sps = pose('idle', lt), rf = -1, sf = 1;
+  if (lt < 3) { rx = lerp(330, 760, ease(prog(lt, 0, 3))); sx = lerp(950, 520, ease(prog(lt, 0, 3))); rps = pose('walk', lt); sps = pose('walk', lt); }
+  if (lt > 2.9 && lt < 3) {}
+  if (lt > 10 && lt < 16) sps = pose('bow', lt);
+  if (lt > 17 && lt < 23) rps = pose('bow', lt);
+  if (lt > 24 && lt < 31) { // qo'l berib ko'rishish
+    const k = ease(prog(lt, 24, 26));
+    rx = lerp(760, 700, k); sx = lerp(520, 580, k);
+    rps = pose('shake', lt); sps = pose('shake', lt);
+  }
+  if (lt >= 31) { // birga ufqqa qarab yurishadi
+    const k = prog(lt, 32, 42);
+    rf = 1; sf = 1; rps = lt > 32 ? pose('walk', lt) : pose('idle', lt); sps = rps;
+    rx = lerp(700, 1150, k); sx = lerp(580, 1030, k);
+  }
+  const sc = lt >= 32 ? lerp(1.35, 1.0, prog(lt, 32, 42)) : 1.35;
+  const gy = lt >= 32 ? lerp(620, 600, prog(lt, 32, 42)) : 620;
+  drawSamurai(sx, gy, sc, sf, sps, lt, { swordGlow: .3, swordGlowCol: '#ffd27a' });
+  drawRobot(rx, gy, sc, rf, rps, lt, { blade: 0 });
+  if (lt > 25.5 && lt < 30) { // yurakcha / porlash
+    const a = prog(lt, 25.5, 26.5) * (1 - prog(lt, 29, 30));
+    c.save(); c.globalAlpha = a; c.globalCompositeOperation = 'lighter';
+    const g = c.createRadialGradient(640, 470, 0, 640, 470, 120); g.addColorStop(0, 'rgba(255,240,200,.9)'); g.addColorStop(1, 'rgba(255,200,120,0)');
+    c.fillStyle = g; c.fillRect(500, 330, 280, 280); c.restore();
+  }
+  petals(t, .6, 80);
+  letterbox(1 - prog(lt, 0, 3) * .5);
+});
+
+// 8. Titrlar
+scene(282, 300, (lt, t) => {
+  c.fillStyle = '#05060c'; c.fillRect(0, 0, W, H);
+  stars(160, .8, t, 9);
+  c.save(); c.textAlign = 'center';
+  const lines = [
+    ['TUGADI', 64, '#38e1ff'], ['', 30], ["« TEMIR VA PO'LAT »", 30, '#ffd36e'], ['', 20],
+    ['Qahramonlar', 20, '#9aa6c8'], ['KAZE-01 — jangovar robot', 26, '#fff'], ['Ryu Takeda — oxirgi samuray', 26, '#fff'], ['', 20],
+    ['Rejissyor va animatsiya', 20, '#9aa6c8'], ['HTML5 Canvas + JavaScript', 26, '#fff'], ['', 20],
+    ['Musiqa', 20, '#9aa6c8'], ['Web Audio API sintezatori', 26, '#fff'], ['', 30],
+    ['Tomosha qilganingiz uchun rahmat!', 30, '#ff6b7a'],
+  ];
+  let y = H + 40 - lt * 60;
+  if (y < 120) y = 120;
+  for (const [txt, size, col] of lines) {
+    c.font = `${size > 40 ? 900 : 600} ${size}px "Segoe UI", sans-serif`; c.fillStyle = col || '#fff';
+    if (col === '#38e1ff') { c.shadowColor = col; c.shadowBlur = 25; } else c.shadowBlur = 0;
+    c.fillText(txt, W / 2, y); y += size * 1.6;
+  }
+  c.restore();
+  // pastda kichik siluetlar
+  c.save(); c.globalAlpha = .9;
+  drawRobot(1050, 700, .7, -1, pose('idle', lt), lt, { noShadow: true });
+  drawSamurai(230, 700, .7, 1, pose('idle', lt), lt, { noShadow: true });
+  c.restore();
+  flash(prog(lt, 16.5, 18), '0,0,0');
+});
+
+// ---------- Subtitrlar ----------
+const SUBS = [
+  [16, 22, 'Hikoyachi', "2187-yil. Neon shahar hech qachon uxlamaydi..."],
+  [23, 30, 'Hikoyachi', "Bu shaharni bitta qahramon qo'riqlaydi — jangovar robot KAZE-01."],
+  [32, 38, 'KAZE-01', "Tizimlar faol. Shaharda noma'lum energiya signali aniqlandi."],
+  [40, 47, 'KAZE-01', "Manba... qadimiy tog'lar tomonda. Yo'lga chiqaman!"],
+  [52, 58, 'Hikoyachi', "Uzoq tog'larda, sakura daraxtlari ostida..."],
+  [59, 66, 'Hikoyachi', "oxirgi samuray — Ryu Takeda — har tun qilichini mashq qiladi."],
+  [68, 75, 'Ryu', "Shamol o'zgardi... Kimdir bu muqaddas yerga kelmoqda."],
+  [77, 84, 'Ryu', "Ajdodlarim qilichi meni hech qachon tark etmagan."],
+  [89, 95, 'KAZE-01', "Energiya signali sendan chiqyapti, samuray. Qilichingni topshir."],
+  [96, 102, 'Ryu', "Bu qilich — ajdodlarim ruhi. Uni olish uchun meni yengishing kerak!"],
+  [103, 109, 'KAZE-01', "Unda... jang protokoli ishga tushadi."],
+  [133, 138, 'KAZE-01', "Plazma to'pi — o't och!"],
+  [142, 147, 'Ryu', "Shamol uslubi: Chaqmoq qadami!"],
+  [147, 152, 'KAZE-01', "Zarar 32%... Raqib kuchi kutilganidan yuqori."],
+  [164, 170, 'Ryu', "Sening ko'zlaringda... yurak bor, temir jangchi."],
+  [172, 176, 'KAZE-01', "Robotlarda yurak bo'lmaydi. RAKETA MUSHT!"],
+  [189, 194, 'Ryu', "Hali tugamadi!"],
+  [192, 198, 'KAZE-01', "Hech qachon taslim bo'lmayman."],
+  [202, 208, 'KAZE-01', "Yadro quvvati 100%... MAKSIMAL REJIM!"],
+  [209, 214, 'Ryu', "Ajdodlar ruhi, menga kuch bering! AJDAR QILICHI!"],
+  [218, 224, 'Ikkalasi', "AAAAAAAAA!"],
+  [229, 235, 'Hikoyachi', "Ikki kuch to'qnashdi... va jimlik cho'kdi."],
+  [242, 249, 'Ryu', "Sen... kuchli jangchisan. Lekin qalbing ham pok ekan."],
+  [250, 256, 'KAZE-01', "Tahlil: qilichdagi energiya — yovuzlik emas, himoya kuchi ekan."],
+  [257, 263, 'KAZE-01', "Men xato qildim. Kechir, Ryu."],
+  [264, 271, 'Ryu', "Haqiqiy jangchi xatosini tan oladi. Endi biz do'stmiz."],
+  [272, 280, 'Hikoyachi', "Temir va po'lat birlashdi. Endi ular dunyoni birga himoya qilishadi..."],
+];
+const SPK = { 'KAZE-01': '#38e1ff', 'Ryu': '#ff6b7a', 'Hikoyachi': '#ffd36e', 'Ikkalasi': '#ffffff' };
+function drawSubs(t) {
+  for (const [a, b, who, txt] of SUBS) {
+    if (t < a || t > b) continue;
+    const al = prog(t, a, a + .3) * (1 - prog(t, b - .3, b));
+    c.save(); c.globalAlpha = al; c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.font = '600 30px "Segoe UI", sans-serif';
+    const tw = c.measureText(txt).width;
+    c.fillStyle = 'rgba(0,0,0,.55)'; rr(W / 2 - tw / 2 - 24, H - 128, tw + 48, 76, 14); c.fill();
+    c.fillStyle = SPK[who] || '#fff'; c.font = '700 20px "Segoe UI", sans-serif'; c.fillText(who, W / 2, H - 110);
+    c.fillStyle = '#fff'; c.font = '600 30px "Segoe UI", sans-serif'; c.fillText(txt, W / 2, H - 78);
+    c.restore();
+  }
+}
+
+// ---------- Asosiy render ----------
+function render(t) {
+  c.setTransform(1, 0, 0, 1, 0, 0);
+  c.clearRect(0, 0, W, H);
+  const s = SCENES.find(s => t >= s.a && t < s.b) || SCENES[SCENES.length - 1];
+  const lt = t - s.a;
+  c.save(); s.fn(lt, t); c.restore();
+  // sahnalar orasidagi qorong'ilashuv
+  const fade = Math.max(1 - prog(lt, 0, .6), prog(lt, s.b - s.a - .6, s.b - s.a));
+  if (s.a > 0 && s !== SCENES[SCENES.length - 1]) flash(fade, '0,0,0');
+  else if (s.a === 0) flash(prog(lt, s.b - s.a - .6, s.b - s.a), '0,0,0');
+  drawSubs(t);
+}
+
+// ---------- AUDIO (Web Audio sintez) ----------
+let AC = null, master = null, noiseBuf = null, muted = false;
+function initAudio() {
+  if (AC) return;
+  AC = new (window.AudioContext || window.webkitAudioContext)();
+  master = AC.createGain(); master.gain.value = .5; master.connect(AC.destination);
+  noiseBuf = AC.createBuffer(1, AC.sampleRate, AC.sampleRate);
+  const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+}
+function tone(freq, dur, type = 'sine', vol = .2, when = 0, slide) {
+  if (!AC || muted) return;
+  const t0 = AC.currentTime + when;
+  const o = AC.createOscillator(), g = AC.createGain();
+  o.type = type; o.frequency.setValueAtTime(freq, t0);
+  if (slide) o.frequency.exponentialRampToValueAtTime(slide, t0 + dur);
+  g.gain.setValueAtTime(0, t0); g.gain.linearRampToValueAtTime(vol, t0 + .01); g.gain.exponentialRampToValueAtTime(.0001, t0 + dur);
+  o.connect(g); g.connect(master); o.start(t0); o.stop(t0 + dur + .05);
+}
+function noise(dur, vol = .2, freq = 1000, type = 'bandpass', when = 0) {
+  if (!AC || muted) return;
+  const t0 = AC.currentTime + when;
+  const src = AC.createBufferSource(); src.buffer = noiseBuf;
+  const f = AC.createBiquadFilter(); f.type = type; f.frequency.value = freq;
+  const g = AC.createGain(); g.gain.setValueAtTime(vol, t0); g.gain.exponentialRampToValueAtTime(.0001, t0 + dur);
+  src.connect(f); f.connect(g); g.connect(master); src.start(t0); src.stop(t0 + dur + .05);
+}
+const SFX = {
+  clash() { tone(1800, .25, 'square', .06); tone(2600, .35, 'triangle', .08); noise(.25, .35, 3000); },
+  big() { tone(60, 1.2, 'sine', .5, 0, 30); noise(1.2, .5, 400, 'lowpass'); tone(2000, .8, 'triangle', .08); },
+  laser() { tone(1400, .3, 'sawtooth', .07, 0, 200); },
+  whoosh() { noise(.35, .3, 1500); },
+  boom() { tone(80, .8, 'sine', .45, 0, 35); noise(.7, .4, 300, 'lowpass'); },
+  thrust() { noise(1.5, .2, 600, 'lowpass'); },
+  power() { tone(110, 3, 'sawtooth', .07, 0, 440); },
+  flashUp() { tone(200, 1.5, 'triangle', .1, 0, 1600); },
+};
+// SFX voqealar ro'yxati (global vaqt)
+const EVENTS = [[4, 'big'], [44, 'thrust'], [87.2, 'boom'], [112.8, 'big'], [117, 'whoosh'], [120, 'clash'], [132, 'whoosh'], [142, 'whoosh'], [142.5, 'clash'], [146, 'whoosh'],
+  [161.8, 'boom'], [173.5, 'thrust'], [175, 'boom'], [182, 'boom'], [200, 'power'], [206, 'power'], [212, 'flashUp'], [225, 'big'], [225.3, 'boom']];
+for (let i = 0; i < 15; i++) EVENTS.push([B1 + 8 + i * .8, 'clash']);
+for (let i = 0; i < 12; i++) EVENTS.push([B1 + 21.5 + i * .7, 'laser']);
+for (let i = 0; i < 7; i++) EVENTS.push([B1 + 36 + i * .6, 'clash']);
+for (let i = 0; i < 9; i++) EVENTS.push([B1 + 40.5 + i * 1.2, 'clash']);
+for (let i = 0; i < 14; i++) EVENTS.push([162 + 23 + i * .35, 'clash']);
+EVENTS.sort((a, b) => a[0] - b[0]);
+
+// Musiqa: sahnaga qarab ritm va ohang (yapon pentatonikasi: A Bb D E F)
+const SCALE = [0, 1, 5, 7, 8, 12, 13, 17, 19, 20];
+const nf = n => 220 * Math.pow(2, n / 12);
+function musicStep(t, step) {
+  if (!AC || muted) return;
+  let mode = 'calm';
+  if (t < 14) mode = 'intro'; else if (t < 86) mode = 'calm'; else if (t < 112) mode = 'tense';
+  else if (t < 200) mode = 'battle'; else if (t < 228) mode = 'climax'; else if (t < 240) mode = 'quiet'; else if (t < 282) mode = 'calm'; else mode = 'end';
+  const s8 = step % 8, s16 = step % 16, bar = Math.floor(step / 16);
+  if (mode === 'calm' || mode === 'end' || mode === 'intro') {
+    if (s16 === 0) { const root = [0, -4, -7, -2][bar % 4]; [0, 7, 12].forEach(n => tone(nf(root + n - 12), 3.2, 'sine', .05)); }
+    if ((s8 === 0 || s8 === 3 || s8 === 5) && rnd(step) > .25) tone(nf(SCALE[Math.floor(rnd(step * 3) * 7) + 2]), 1.1, 'triangle', .07);
+  } else if (mode === 'tense') {
+    if (s16 === 0) tone(nf(-24), 4, 'sawtooth', .04);
+    if (s8 === 0) { tone(70, .5, 'sine', .35, 0, 40); }
+    if (s16 === 12) noise(.6, .08, 800);
+    if (s8 === 4 && rnd(step) > .5) tone(nf(SCALE[Math.floor(rnd(step) * 5)] + 12), .8, 'triangle', .05);
+  } else if (mode === 'battle' || mode === 'climax') {
+    const v = mode === 'climax' ? 1.3 : 1;
+    if (s8 === 0 || s8 === 3 || s8 === 6) tone(65, .35, 'sine', .4 * v, 0, 38); // taiko
+    if (s8 === 4) noise(.15, .2 * v, 2500);
+    noise(.04, .04, 8000, 'highpass');
+    const bass = [0, 0, 12, 0, 1, 0, 13, 1][s8] + (bar % 4 === 3 ? -2 : 0);
+    tone(nf(bass - 24), .2, 'square', .05 * v);
+    if (s16 % 2 === 0) { const mel = [12, 13, 17, 19, 20, 19, 17, 13]; tone(nf(mel[(s16 / 2 + bar) % 8] + (mode === 'climax' ? 12 : 0)), .25, 'sawtooth', .035 * v); }
+  } else if (mode === 'quiet') {
+    if (s16 === 0) tone(nf(-12), 4, 'sine', .05);
+  }
+}
+
+// ---------- Ijro boshqaruvi ----------
+let T = 0, playing = false, lastNow = 0, lastStepKey = -1;
+const playBtn = document.getElementById('play'), seek = document.getElementById('seek'), timeEl = document.getElementById('time');
+const fmt = s => Math.floor(s / 60) + ':' + String(Math.floor(s % 60)).padStart(2, '0');
+function setPlaying(p) { playing = p; playBtn.textContent = p ? '❚❚' : '▶'; lastNow = performance.now(); if (p && AC && AC.state === 'suspended') AC.resume(); }
+function frame(now) {
+  if (playing) {
+    const dt = Math.min(.1, (now - lastNow) / 1000);
+    const prev = T; T = Math.min(DURATION, T + dt);
+    for (const [et, name] of EVENTS) if (et > prev && et <= T) SFX[name]();
+    const bpm = (T >= 112 && T < 228) ? 150 : (T >= 86 && T < 112 ? 90 : 76);
+    const key = Math.floor(T * bpm / 60 * 2);
+    if (key !== lastStepKey) { lastStepKey = key; musicStep(T, key); }
+    if (T >= DURATION) setPlaying(false);
+  }
+  lastNow = now;
+  render(T);
+  seek.value = T; timeEl.textContent = fmt(T) + ' / ' + fmt(DURATION);
+  requestAnimationFrame(frame);
+}
+document.getElementById('startBtn').onclick = document.getElementById('start').onclick = e => {
+  e.stopPropagation(); initAudio(); document.getElementById('start').style.display = 'none'; if (T >= DURATION) T = 0; setPlaying(true);
+};
+playBtn.onclick = () => { initAudio(); document.getElementById('start').style.display = 'none'; if (T >= DURATION) T = 0; setPlaying(!playing); };
+seek.oninput = () => { T = +seek.value; };
+const muteBtn = document.getElementById('mute');
+function toggleMute() { muted = !muted; muteBtn.textContent = muted ? '🔇' : '🔊'; if (master) master.gain.value = muted ? 0 : .5; }
+muteBtn.onclick = toggleMute;
+function toggleFS() { const el = document.getElementById('wrap'); if (!document.fullscreenElement) el.requestFullscreen?.(); else document.exitFullscreen?.(); }
+document.getElementById('fs').onclick = toggleFS;
+addEventListener('keydown', e => {
+  if (e.code === 'Space') { e.preventDefault(); playBtn.onclick(); }
+  else if (e.code === 'ArrowRight') T = Math.min(DURATION, T + 5);
+  else if (e.code === 'ArrowLeft') T = Math.max(0, T - 5);
+  else if (e.key === 'm' || e.key === 'M') toggleMute();
+  else if (e.key === 'f' || e.key === 'F') toggleFS();
+});
+// Test uchun: ?t=120 — shu soniyadan kadr
+const qp = new URLSearchParams(location.search);
+if (qp.has('t')) { T = +qp.get('t'); document.getElementById('start').style.display = 'none'; }
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
