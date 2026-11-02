@@ -251,8 +251,21 @@ class LedgerEntry {
         type: EntryType.values.byName(j['type'] as String),
         reportVersion: (j['reportVersion'] as num).toInt(),
         baseRevenue: Money((j['baseRevenueTiyin'] as num).toInt()),
-        createdAt: DateTime.parse(j['createdAt'] as String),
+        createdAt: _parseDate(j['createdAt']),
       );
+
+  /// String, DateTime yoki Firestore `Timestamp` (toDate() metodi bor) qabul qiladi.
+  /// `serverTimestamp()` hali yozilmagan bo'lsa (null) — hozirgi vaqt.
+  static DateTime _parseDate(Object? v) {
+    if (v == null) return DateTime.now();
+    if (v is DateTime) return v;
+    if (v is String) return DateTime.parse(v);
+    try {
+      return (v as dynamic).toDate() as DateTime;
+    } catch (_) {
+      throw FormatException("createdAt noma'lum formatda: $v");
+    }
+  }
 
   @override
   String toString() => 'LedgerEntry($id, $period, ${role.name}, $amount, ${type.name})';

@@ -1,0 +1,42 @@
+rules_version = '2';
+// Pulga oid hamma narsani faqat Cloud Functions (Admin SDK) yozadi.
+// Klient faqat o'ziga tegishli ma'lumotni o'qiy oladi.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function isAdmin() { return signedIn() && request.auth.token.admin == true; }
+    function dealData(dealId) { return get(/databases/$(database)/documents/deals/$(dealId)).data; }
+    function isParticipant(d) { return signedIn() && request.auth.uid in d.participants; }
+
+    match /deals/{dealId} {
+      // Ro'yxat so'rovi: where('participants', arrayContains: uid) bo'lishi shart
+      allow read: if isAdmin() || isParticipant(resource.data);
+      allow write: if false;
+
+      match /reports/{period} {
+        allow read: if isAdmin() || isParticipant(dealData(dealId));
+        allow write: if false; // faqat submitReport / reviewReport orqali
+      }
+    }
+
+    match /ledger/{entryId} {
+      // Ro'yxat so'rovi: where('recipientId', isEqualTo: uid) bo'lishi shart
+      allow read: if isAdmin() || (signedIn() && resource.data.recipientId == request.auth.uid);
+      allow write: if false;
+    }
+
+    match /earnings/{uid} {
+      allow read: if isAdmin() || (signedIn() && request.auth.uid == uid);
+      allow write: if false;
+    }
+
+    match /notifications/{uid}/items/{id} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      // Foydalanuvchi faqat "o'qildi" belgisini qo'ya oladi
+      allow update: if signedIn() && request.auth.uid == uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read'])
+        && request.resource.data.read == true;
+      allow create, delete: if false;
+    }
+  }
+}
